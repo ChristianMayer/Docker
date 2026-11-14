@@ -62,7 +62,7 @@ start_fcgi_backend() {
     export FCGI_SOCKET=${FCGI_SOCKET:-/run/cometvisu-fcgi.sock}
     export LONGPOLL_TIMEOUT_SEC=${LONGPOLL_TIMEOUT_SEC:-300}
     export DEBUG_BACKEND=${DEBUG_BACKEND:-}
-    export FCGI_WORKERS=${FCGI_WORKERS:-20}
+    export FCGI_WORKERS=${FCGI_WORKERS:-9}
     if [ x"${USE_EXTERNAL_KNXD}" = x"true" ]; then
         # Talk to the socket provided by the external knxd.
         export KNXD_SOCKET
@@ -77,9 +77,28 @@ start_fcgi_backend() {
     # external knxd FCGI_WORKERS has to fit the external configuration.
     if [ x"${START_KNXD}" = x"true" ]; then
         KNXD_CLIENT_COUNT="${KNX_CLIENT_PAS##*:}"
-        if [ "${FCGI_WORKERS}" -gt "${KNXD_CLIENT_COUNT}" ]; then
-            echo "WARNING: FCGI_WORKERS (${FCGI_WORKERS}) exceeds knxd client count (${KNXD_CLIENT_COUNT}), reducing to ${KNXD_CLIENT_COUNT}"
-            export FCGI_WORKERS="${KNXD_CLIENT_COUNT}"
+        case "${KNXD_CLIENT_COUNT}" in
+            ''|*[!0-9]*)
+                echo "ERROR: cannot determine knxd client count from KNX_CLIENT_PAS ('${KNX_CLIENT_PAS}') - expected the format <address>:<count>"
+                exit 1
+                ;;
+        esac
+        # One of the client connections is reserved for the internal cache
+        # reader, so at most (client count - 1) workers may run. Together with
+        # the requirement of at least 2 workers this means that knxd needs at
+        # least 3 client connections.
+        if [ "${KNXD_CLIENT_COUNT}" -lt 3 ]; then
+            echo "ERROR: KNX_CLIENT_PAS client count (${KNXD_CLIENT_COUNT}) is too low - at least 3 client connections are required so that FCGI_WORKERS = clients - 1 is greater than 1"
+            exit 1
+        fi
+        MAX_FCGI_WORKERS=$((KNXD_CLIENT_COUNT - 1))
+        if [ "${FCGI_WORKERS}" -gt "${MAX_FCGI_WORKERS}" ]; then
+            echo "WARNING: FCGI_WORKERS (${FCGI_WORKERS}) must be one less than the knxd client count (${KNXD_CLIENT_COUNT}) as one connection is used by the cache reader, reducing to ${MAX_FCGI_WORKERS}"
+            export FCGI_WORKERS="${MAX_FCGI_WORKERS}"
+        fi
+        if [ "${FCGI_WORKERS}" -lt 2 ]; then
+            echo "WARNING: FCGI_WORKERS (${FCGI_WORKERS}) must be larger than 1, increasing to 2"
+            export FCGI_WORKERS=2
         fi
     fi
     echo "LONGPOLL_TIMEOUT_SEC: '${LONGPOLL_TIMEOUT_SEC}'"
