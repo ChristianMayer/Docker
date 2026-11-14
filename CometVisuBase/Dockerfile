@@ -162,6 +162,10 @@ ENV DEBUG_BACKEND=
 
 ENV STOP_ON_BAD_HEALTH=true
 
+# Port Apache listens on inside the container. Changing it is an expert option -
+# EXPOSE stays 80, so use "-p <host-port>:${APACHE_PORT}" when publishing.
+ENV APACHE_PORT=80
+
 EXPOSE 80/tcp
 
 HEALTHCHECK --interval=120s --timeout=10s --start-period=10s CMD ["healthcheck"]
