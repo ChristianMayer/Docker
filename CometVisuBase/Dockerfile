@@ -157,7 +157,9 @@ ENV BACKEND_PROXY_TARGET=""
 
 # settings for the FastCGI backend
 ENV LONGPOLL_TIMEOUT_SEC=300
-ENV FCGI_WORKERS=20
+# Must be one less than the KNX_CLIENT_PAS client count (one connection is used
+# by the cache reader) and larger than 1 - see cometvisu-entrypoint.
+ENV FCGI_WORKERS=9
 ENV DEBUG_BACKEND=
 
 ENV STOP_ON_BAD_HEALTH=true
