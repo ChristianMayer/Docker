@@ -25,10 +25,13 @@ Environment parameters:
 |KNX_INTERFACE          | iptn:172.17.0.1:3700      |Special case for `knxd`: information for the knxd to connect to the KNX bus|
 |KNX_PA                 | 1.1.238                   |Special case for `knxd`: PA for the knxd|
 |KNXD_PARAMETERS        | -u -d/var/log/eibd.log -c |Special case for `knxd`: additional startup parameters for the knxd|
+|NO_ENTRYPOINT_KNXD     | false                     |`false`: start knxd inside this container. `extern`: do **not** start knxd, use the socket of an external knxd instead (see `KNXD_SOCKET`). `true`: start neither knxd nor the FastCGI backend|
+|KNXD_SOCKET            | /run/knx                  |Special case for `knxd`: path to the knxd Unix socket. Only used when `NO_ENTRYPOINT_KNXD=extern`|
 |BACKEND_PROXY_SOURCE   |                           |Special case for openHAB: proxy paths starting with this value, e.g. `/rest`|
 |BACKEND_PROXY_TARGET   |                           |Special case for openHAB: target URL for proxying the requests to BACKEND_PROXY_SOURCE, e.g. `http://<openhab-server-ip-address>:8080/rest`|
 |STOP_ON_BAD_HEALTH     | true                      |Stop container on failed health check when set to `true`. This will trigger a new start of the container when docker is configured to do so|
 |ACCESS_LOG             | false                     |Show web server access log when set to `true`|
+|APACHE_PORT            | 80                        |Expert option: port Apache listens on inside the container. When changed, publish with `-p <host-port>:<APACHE_PORT>` (`EXPOSE` stays `80`)|
 |LONGPOLL_TIMEOUT_SEC   | 300                       |Max seconds to wait in long-poll for the `r` (read) backend request|
 |DEBUG_BACKEND          | *(unset)*                 |Set to `1` to enable debug logging of the FastCGI backend to stderr|
 
@@ -50,6 +53,44 @@ KNX_PA=1.1.250
 
 **Note:** When `BACKEND_KNXD` and `CGI_URL_PATH` are set at the same time
 the value of `BACKEND_KNXD` is used.
+
+#### External knxd
+
+When knxd already runs outside of this container (e.g. on the host or in
+another container) it must not be started twice. Set
+`NO_ENTRYPOINT_KNXD=extern` to skip starting knxd while still starting the
+FastCGI backend which then connects to the socket provided from outside:
+
+```
+docker run -d -p 8080:80 \
+  -v /run:/host-run:ro \
+  -e NO_ENTRYPOINT_KNXD=extern \
+  -e KNXD_SOCKET=/host-run/knx \
+  -e BACKEND_NAME=knxd \
+  -e BACKEND_KNXD=https://server.local/cgi-bin/l \
+  -e FCGI_WORKERS=7 \
+  cometvisu/cometvisuabstractbase:latest
+```
+
+Notes for this mode:
+
+* `KNXD_SOCKET` defaults to `/run/knx`, so when the socket is mounted exactly
+there the variable doesn't need to be set.
+* Mount the **directory** containing the socket rather than the socket file
+itself. A bind mount of the socket file keeps pointing to the old inode when
+the external knxd is restarted and recreates the socket.
+* `KNX_PA`, `KNX_CLIENT_PAS`, `KNX_INTERFACE`, `KNX_INTERFACE_OPTIONS` and
+`KNXD_PARAMETERS` are ignored - the external knxd brings its own configuration
+(including the group cache, which must be enabled there for reads).
+* `FCGI_WORKERS` has to fit the number of client connections the external knxd
+accepts (`-E <address>:<count>`). Each worker uses one connection, plus one for
+the internal cache reader. The automatic reduction based on `KNX_CLIENT_PAS`
+only happens when the container starts knxd itself.
+* No health check for knxd is generated (neither the process nor the socket is
+controlled by this container); only the FastCGI backend and Apache are checked.
+
+**Note:** With `NO_ENTRYPOINT_KNXD=true` neither knxd nor the FastCGI backend is
+started, i.e. the `knxd` backend is unavailable and `/cgi-bin/l` will fail.
 
 ### openHAB
 
@@ -102,6 +143,20 @@ directory `/var/www/rrd/`. So this would also be a volume as the RRD files must
 be created and filled up from an external source to this container.  
 **NOTE:** the RRD files must be compatible in architecture as they can't be used
 otherwise.
+
+### Changing the Apache port (expert option)
+
+Normally it is enough to publish the internal port `80` to any port on the
+host, e.g. `-p 8080:80`. When the internal port itself has to change (e.g. with
+`--network host` or when containers share a network namespace), set
+`APACHE_PORT`:
+
+```
+docker run -d -p 8080:8081 -e APACHE_PORT=8081 cometvisu/cometvisuabstractbase:latest
+```
+
+Not available together with `NO_ENTRYPOINT_APACHE=true`, as in that case the
+Apache configuration is entirely up to you.
 
 FAQ:
 ----

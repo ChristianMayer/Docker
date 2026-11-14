@@ -3,6 +3,8 @@ set -e
 
 NO_ENTRYPOINT_APACHE=${NO_ENTRYPOINT_APACHE:-false}
 NO_ENTRYPOINT_KNXD=${NO_ENTRYPOINT_KNXD:-false}
+KNXD_SOCKET=${KNXD_SOCKET:-/run/knx}
+APACHE_PORT=${APACHE_PORT:-80}
 
 CGI_URL_PATH=${CGI_URL_PATH:-/cgi-bin/}
 
@@ -41,7 +43,74 @@ if [ x"${ADDITIONAL_HEALTHCHECK}" != x"" ]; then
     echo "${ADDITIONAL_HEALTHCHECK}" >> /usr/local/bin/healthcheck
 fi
 
-if [ "${KNXD_PARAMETERS}" != "" ] || [ "${KNX_INTERFACE}" != "" ]; then
+# How knxd is handled:
+#   NO_ENTRYPOINT_KNXD=false   knxd is started inside this container (default)
+#   NO_ENTRYPOINT_KNXD=extern  knxd is not started, the socket of an external
+#                              knxd is used instead (path given by KNXD_SOCKET)
+#   NO_ENTRYPOINT_KNXD=true    neither knxd nor the FastCGI backend is started
+START_KNXD="true"
+USE_EXTERNAL_KNXD="false"
+if [ x"${NO_ENTRYPOINT_KNXD}" = x"extern" ]; then
+    START_KNXD="false"
+    USE_EXTERNAL_KNXD="true"
+elif [ x"${NO_ENTRYPOINT_KNXD}" != x"false" ]; then
+    START_KNXD="false"
+fi
+
+start_fcgi_backend() {
+    # Start cometvisu-knxd-fcgi in standalone socket mode (the binary's intended usage).
+    export FCGI_SOCKET=${FCGI_SOCKET:-/run/cometvisu-fcgi.sock}
+    export LONGPOLL_TIMEOUT_SEC=${LONGPOLL_TIMEOUT_SEC:-300}
+    export DEBUG_BACKEND=${DEBUG_BACKEND:-}
+    export FCGI_WORKERS=${FCGI_WORKERS:-20}
+    if [ x"${USE_EXTERNAL_KNXD}" = x"true" ]; then
+        # Talk to the socket provided by the external knxd.
+        export KNXD_SOCKET
+        echo "KNXD_SOCKET: '${KNXD_SOCKET}'"
+    else
+        # The knxd started by this container uses its default socket path.
+        unset KNXD_SOCKET
+        echo "KNXD_SOCKET: '/run/knx' (default, knxd is started by this container)"
+    fi
+    # Extract knxd client count from KNX_CLIENT_PAS (format: <addr>:<count>).
+    # That number is only known when knxd is started by this container - for an
+    # external knxd FCGI_WORKERS has to fit the external configuration.
+    if [ x"${START_KNXD}" = x"true" ]; then
+        KNXD_CLIENT_COUNT="${KNX_CLIENT_PAS##*:}"
+        if [ "${FCGI_WORKERS}" -gt "${KNXD_CLIENT_COUNT}" ]; then
+            echo "WARNING: FCGI_WORKERS (${FCGI_WORKERS}) exceeds knxd client count (${KNXD_CLIENT_COUNT}), reducing to ${KNXD_CLIENT_COUNT}"
+            export FCGI_WORKERS="${KNXD_CLIENT_COUNT}"
+        fi
+    fi
+    echo "LONGPOLL_TIMEOUT_SEC: '${LONGPOLL_TIMEOUT_SEC}'"
+    echo "FCGI_WORKERS: '${FCGI_WORKERS}'"
+    if [ x"${DEBUG_BACKEND}" = x"1" ]; then
+        echo "DEBUG_BACKEND: enabled"
+    fi
+    echo -n "starting cometvisu-knxd-fcgi - version: " && cometvisu-knxd-fcgi --version
+    cometvisu-knxd-fcgi &
+    sleep 2
+    if [ ! -S "${FCGI_SOCKET}" ]; then
+        echo "Error: cometvisu-knxd-fcgi socket does not exist at ${FCGI_SOCKET}";
+        exit 1;
+    fi
+    chmod a+rwx "${FCGI_SOCKET}"
+    echo "if ! pgrep -f cometvisu-knxd-fcgi >/dev/null; then healthcheck_fail 'Error: cometvisu-knxd-fcgi not running'; fi" >> /usr/local/bin/healthcheck
+    echo "if [ ! -S \"\${FCGI_SOCKET}\" ]; then healthcheck_fail 'Error: cometvisu-knxd-fcgi socket does not exist'; fi" >> /usr/local/bin/healthcheck
+}
+
+if [ x"${USE_EXTERNAL_KNXD}" = x"true" ]; then
+    echo "using external knxd socket '${KNXD_SOCKET}' (knxd is not started by this container)"
+    if [ "${KNXD_PARAMETERS}" != "" ] || [ "${KNX_INTERFACE}" != "" ]; then
+        echo "NOTE: KNXD_PARAMETERS, KNX_INTERFACE, KNX_INTERFACE_OPTIONS, KNX_PA and KNX_CLIENT_PAS are ignored when an external knxd is used"
+    fi
+    if [ ! -S "${KNXD_SOCKET}" ]; then
+        echo "WARNING: no knxd socket found at '${KNXD_SOCKET}'"
+        echo "WARNING: mount the socket of the external knxd into this container - the FastCGI backend will keep retrying until it is reachable"
+    fi
+    # No knxd health check is generated: knxd is not controlled by this container
+    start_fcgi_backend
+elif [ "${KNXD_PARAMETERS}" != "" ] || [ "${KNX_INTERFACE}" != "" ]; then
     if [ "${KNXD_PARAMETERS}" != "" ]; then
         echo "creating knxd config file completely based on values from KNXD_PARAMETERS (${KNXD_PARAMETERS})"
         echo ""
@@ -103,51 +172,36 @@ if [ "${KNXD_PARAMETERS}" != "" ] || [ "${KNX_INTERFACE}" != "" ]; then
         echo "if ! pgrep -f knxd >/dev/null; then healthcheck_fail 'Error: knxd not running'; fi" >> /usr/local/bin/healthcheck
         echo "if [ ! -S /run/knx ]; then healthcheck_fail 'Error: knxd socket does not exist'; fi" >> /usr/local/bin/healthcheck
 
-        # Start cometvisu-knxd-fcgi in standalone socket mode (the binary's intended usage).
-        export FCGI_SOCKET=/run/cometvisu-fcgi.sock
-        export LONGPOLL_TIMEOUT_SEC=${LONGPOLL_TIMEOUT_SEC:-300}
-        export DEBUG_BACKEND=${DEBUG_BACKEND:-}
-        # Extract knxd client count from KNX_CLIENT_PAS (format: <addr>:<count>)
-        KNXD_CLIENT_COUNT="${KNX_CLIENT_PAS##*:}"
-        export FCGI_WORKERS=${FCGI_WORKERS:-20}
-        if [ "${FCGI_WORKERS}" -gt "${KNXD_CLIENT_COUNT}" ]; then
-            echo "WARNING: FCGI_WORKERS (${FCGI_WORKERS}) exceeds knxd client count (${KNXD_CLIENT_COUNT}), reducing to ${KNXD_CLIENT_COUNT}"
-            export FCGI_WORKERS="${KNXD_CLIENT_COUNT}"
-        fi
-        echo "LONGPOLL_TIMEOUT_SEC: '${LONGPOLL_TIMEOUT_SEC}'"
-        echo "FCGI_WORKERS: '${FCGI_WORKERS}'"
-        if [ x"${DEBUG_BACKEND}" = x"1" ]; then
-            echo "DEBUG_BACKEND: enabled"
-        fi
-        echo -n "starting cometvisu-knxd-fcgi - version: " && cometvisu-knxd-fcgi --version
-        cometvisu-knxd-fcgi &
-        sleep 2
-        if [ ! -S "${FCGI_SOCKET}" ]; then
-            echo "Error: cometvisu-knxd-fcgi socket does not exist at ${FCGI_SOCKET}";
-            exit 1;
-        fi
-        chmod a+rwx "${FCGI_SOCKET}"
-        echo "if ! pgrep -f cometvisu-knxd-fcgi >/dev/null; then healthcheck_fail 'Error: cometvisu-knxd-fcgi not running'; fi" >> /usr/local/bin/healthcheck
-        echo "if [ ! -S \"\${FCGI_SOCKET}\" ]; then healthcheck_fail 'Error: cometvisu-knxd-fcgi socket does not exist'; fi" >> /usr/local/bin/healthcheck
+        start_fcgi_backend
     fi
 fi
 
-# Tell the CometVisu to path to the login
-echo ''                                                             >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
-echo '<FilesMatch "visu_config.*xml$">'                             >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
-if [ x"${BACKEND_NAME}" != x"" ]; then
-    echo "    Header set X-CometVisu-Backend-Name ${BACKEND_NAME}"            >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
+# Tell the CometVisu the paths to the backends using HTTP response headers.
+# This configuration is written to its own file which is completely rewritten on
+# every start. Appending to cv-docker-php.conf would grow that file by another
+# "FilesMatch" section on each start of the container (see issue #1355).
+{
+    echo '# This file is generated by the cometvisu-entrypoint script.'
+    echo '# It is rewritten completely on every container start - do NOT edit it manually!'
+    echo '<FilesMatch "visu_config.*xml$">'
+    if [ x"${BACKEND_NAME}" != x"" ]; then
+        echo "    Header set X-CometVisu-Backend-Name ${BACKEND_NAME}"
+    fi
+    if [ x"${BACKEND_KNXD}" != x"" ]; then
+        echo "    Header set X-CometVisu-Backend-KNXD-Url ${BACKEND_KNXD}"
+    fi
+    if [ x"${BACKEND_MQTT}" != x"" ]; then
+        echo "    Header set X-CometVisu-Backend-MQTT-Url ${BACKEND_MQTT}"
+    fi
+    if [ x"${BACKEND_OPENHAB}" != x"" ]; then
+        echo "    Header set X-CometVisu-Backend-OpenHAB-Url ${BACKEND_OPENHAB}"
+    fi
+    echo '</FilesMatch>'
+} > "$APACHE_CONFDIR/conf-available/cv-docker-headers.conf"
+
+if [ ! -e "$APACHE_CONFDIR/conf-enabled/cv-docker-headers.conf" ]; then
+    a2enconf cv-docker-headers > /dev/null
 fi
-if [ x"${BACKEND_KNXD}" != x"" ]; then
-    echo "    Header set X-CometVisu-Backend-KNXD-Url ${BACKEND_KNXD}"        >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
-fi
-if [ x"${BACKEND_MQTT}" != x"" ]; then
-    echo "    Header set X-CometVisu-Backend-MQTT-Url ${BACKEND_MQTT}"        >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
-fi
-if [ x"${BACKEND_OPENHAB}" != x"" ]; then
-    echo "    Header set X-CometVisu-Backend-OpenHAB-Url ${BACKEND_OPENHAB}"  >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
-fi
-echo '</FilesMatch>'                                                >> $APACHE_CONFDIR/conf-available/cv-docker-php.conf
 
 if [ x"${BACKEND_PROXY_SOURCE}" != x"" ] && [ x"${BACKEND_PROXY_TARGET}" != x"" ]; then
     echo "proxying ${BACKEND_PROXY_SOURCE} -> ${BACKEND_PROXY_TARGET}"
@@ -171,7 +225,16 @@ if [ x"${NO_ENTRYPOINT_APACHE}" = x"false" ]; then
         else ln -f -s /dev/null /var/log/apache2/access.log
     fi
 
-    echo "if ! curl -f -s http://localhost/ >/dev/null; then healthcheck_fail 'Error: apache not responding'; fi" >> /usr/local/bin/healthcheck
+    # Expert option: let Apache listen on a different port than 80.
+    # Both files need to be adapted, otherwise the requests end up in the
+    # default server which has no DocumentRoot.
+    if [ x"${APACHE_PORT}" != x"80" ]; then
+        echo "configuring Apache to listen on port ${APACHE_PORT}"
+        sed -i "s/^Listen 80$/Listen ${APACHE_PORT}/" "${APACHE_CONFDIR}/ports.conf"
+        sed -i "s/^<VirtualHost \*:80>$/<VirtualHost *:${APACHE_PORT}>/" "${APACHE_CONFDIR}/sites-available/000-default.conf"
+    fi
+
+    echo "if ! curl -f -s http://localhost:${APACHE_PORT}/ >/dev/null; then healthcheck_fail 'Error: apache not responding'; fi" >> /usr/local/bin/healthcheck
 
     # first arg is `-f` or `--some-option`
     if [ x"${1#-}" != x"$1" ]; then

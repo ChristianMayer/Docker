@@ -146,6 +146,8 @@ ENV KNXD_PARAMETERS=""
 
 ENV FCGI_SOCKET=/run/cometvisu-fcgi.sock
 ENV CGI_URL_PATH=/cgi-bin/
+# knxd socket path - only used when NO_ENTRYPOINT_KNXD=extern
+ENV KNXD_SOCKET=/run/knx
 ENV BACKEND_NAME="knxd"
 ENV BACKEND_KNXD=""
 ENV BACKEND_MQTT=""
@@ -159,6 +161,10 @@ ENV FCGI_WORKERS=20
 ENV DEBUG_BACKEND=
 
 ENV STOP_ON_BAD_HEALTH=true
+
+# Port Apache listens on inside the container. Changing it is an expert option -
+# EXPOSE stays 80, so use "-p <host-port>:${APACHE_PORT}" when publishing.
+ENV APACHE_PORT=80
 
 EXPOSE 80/tcp
 
