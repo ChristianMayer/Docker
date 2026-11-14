@@ -31,6 +31,7 @@ Environment parameters:
 |BACKEND_PROXY_TARGET   |                           |Special case for openHAB: target URL for proxying the requests to BACKEND_PROXY_SOURCE, e.g. `http://<openhab-server-ip-address>:8080/rest`|
 |STOP_ON_BAD_HEALTH     | true                      |Stop container on failed health check when set to `true`. This will trigger a new start of the container when docker is configured to do so|
 |ACCESS_LOG             | false                     |Show web server access log when set to `true`|
+|APACHE_PORT            | 80                        |Expert option: port Apache listens on inside the container. When changed, publish with `-p <host-port>:<APACHE_PORT>` (`EXPOSE` stays `80`)|
 |LONGPOLL_TIMEOUT_SEC   | 300                       |Max seconds to wait in long-poll for the `r` (read) backend request|
 |DEBUG_BACKEND          | *(unset)*                 |Set to `1` to enable debug logging of the FastCGI backend to stderr|
 
@@ -142,6 +143,20 @@ directory `/var/www/rrd/`. So this would also be a volume as the RRD files must
 be created and filled up from an external source to this container.  
 **NOTE:** the RRD files must be compatible in architecture as they can't be used
 otherwise.
+
+### Changing the Apache port (expert option)
+
+Normally it is enough to publish the internal port `80` to any port on the
+host, e.g. `-p 8080:80`. When the internal port itself has to change (e.g. with
+`--network host` or when containers share a network namespace), set
+`APACHE_PORT`:
+
+```
+docker run -d -p 8080:8081 -e APACHE_PORT=8081 cometvisu/cometvisuabstractbase:latest
+```
+
+Not available together with `NO_ENTRYPOINT_APACHE=true`, as in that case the
+Apache configuration is entirely up to you.
 
 FAQ:
 ----

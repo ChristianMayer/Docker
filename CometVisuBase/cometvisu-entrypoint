@@ -4,6 +4,7 @@ set -e
 NO_ENTRYPOINT_APACHE=${NO_ENTRYPOINT_APACHE:-false}
 NO_ENTRYPOINT_KNXD=${NO_ENTRYPOINT_KNXD:-false}
 KNXD_SOCKET=${KNXD_SOCKET:-/run/knx}
+APACHE_PORT=${APACHE_PORT:-80}
 
 CGI_URL_PATH=${CGI_URL_PATH:-/cgi-bin/}
 
@@ -224,7 +225,16 @@ if [ x"${NO_ENTRYPOINT_APACHE}" = x"false" ]; then
         else ln -f -s /dev/null /var/log/apache2/access.log
     fi
 
-    echo "if ! curl -f -s http://localhost/ >/dev/null; then healthcheck_fail 'Error: apache not responding'; fi" >> /usr/local/bin/healthcheck
+    # Expert option: let Apache listen on a different port than 80.
+    # Both files need to be adapted, otherwise the requests end up in the
+    # default server which has no DocumentRoot.
+    if [ x"${APACHE_PORT}" != x"80" ]; then
+        echo "configuring Apache to listen on port ${APACHE_PORT}"
+        sed -i "s/^Listen 80$/Listen ${APACHE_PORT}/" "${APACHE_CONFDIR}/ports.conf"
+        sed -i "s/^<VirtualHost \*:80>$/<VirtualHost *:${APACHE_PORT}>/" "${APACHE_CONFDIR}/sites-available/000-default.conf"
+    fi
+
+    echo "if ! curl -f -s http://localhost:${APACHE_PORT}/ >/dev/null; then healthcheck_fail 'Error: apache not responding'; fi" >> /usr/local/bin/healthcheck
 
     # first arg is `-f` or `--some-option`
     if [ x"${1#-}" != x"$1" ]; then
