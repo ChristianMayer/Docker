@@ -146,6 +146,8 @@ ENV KNXD_PARAMETERS=""
 
 ENV FCGI_SOCKET=/run/cometvisu-fcgi.sock
 ENV CGI_URL_PATH=/cgi-bin/
+# knxd socket path - only used when NO_ENTRYPOINT_KNXD=extern
+ENV KNXD_SOCKET=/run/knx
 ENV BACKEND_NAME="knxd"
 ENV BACKEND_KNXD=""
 ENV BACKEND_MQTT=""
